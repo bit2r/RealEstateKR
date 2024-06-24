@@ -1,0 +1,302 @@
+---
+title: "부동산"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{부동산}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(RealEstateKR)
+library(httr)
+library(jsonlite)
+library(dplyr)
+```
+
+## 지오코딩
+
+### 주소 -> 위경도 (스크립트)
+
+
+```{r}
+library(httr)
+library(jsonlite)
+
+apiurl <- "https://api.vworld.kr/req/address?"
+params <- list(
+  service = "address",
+  request = "getcoord",
+  crs = "epsg:4326",
+  address = "판교로 242",
+  format = "json",
+  type = "road",
+  key = Sys.getenv("VWORLD_API_KEY")
+)
+
+response <- GET(apiurl, query = params)
+
+if (status_code(response) == 200) {
+  response_content <- content(response, as = "text")
+  response_json <- fromJSON(response_content)
+  
+  # 주소 정보와 위경도 정보 추출
+  refined_address <- response_json$response$refined$text
+  longitude <- response_json$response$result$point$x
+  latitude <- response_json$response$result$point$y
+  
+  # 데이터프레임으로 변환
+  address_df <- data.frame(
+    Address = refined_address,
+    Longitude = longitude,
+    Latitude = latitude
+  )
+  
+  # 데이터프레임 출력
+  print(address_df)
+}
+```
+
+
+
+### 주소 -> 위경도 (스크립트)
+
+
+```{r}
+library(httr)
+library(jsonlite)
+
+apiurl <- "https://api.vworld.kr/req/address?"
+params <- list(
+  service = "address",
+  request = "getcoord",
+  crs = "epsg:4326",
+  address = "판교로 242",
+  format = "json",
+  type = "road",
+  key = Sys.getenv("VWORLD_API_KEY")
+)
+
+response <- GET(apiurl, query = params)
+
+if (status_code(response) == 200) {
+  response_content <- content(response, as = "text")
+  response_json <- fromJSON(response_content)
+  
+  # 주소 정보와 위경도 정보 추출
+  refined_address <- response_json$response$refined$text
+  longitude <- response_json$response$result$point$x
+  latitude <- response_json$response$result$point$y
+  
+  # 데이터프레임으로 변환
+  address_df <- data.frame(
+    Address = refined_address,
+    Longitude = longitude,
+    Latitude = latitude
+  )
+  
+  # 데이터프레임 출력
+  print(address_df)
+}
+```
+
+### 위경도 -> 주소 (함수)
+
+```{r}
+library(httr)
+library(jsonlite)
+
+# 함수 정의
+get_coordinates <- function(address) {
+  apiurl <- "https://api.vworld.kr/req/address?"
+  params <- list(
+    service = "address",
+    request = "getcoord",
+    crs = "epsg:4326",
+    address = address,
+    format = "json",
+    type = "road",
+    key = Sys.getenv("VWORLD_API_KEY")
+  )
+  
+  response <- GET(apiurl, query = params)
+  
+  if (status_code(response) == 200) {
+    response_content <- content(response, as = "text")
+    response_json <- fromJSON(response_content)
+    
+    # 주소 정보와 위경도 정보 추출
+    refined_address <- response_json$response$refined$text
+    longitude <- response_json$response$result$point$x
+    latitude <- response_json$response$result$point$y
+    
+    # 데이터프레임으로 변환
+    address_df <- data.frame(
+      Address = refined_address,
+      Longitude = longitude,
+      Latitude = latitude
+    )
+    
+    return(address_df)
+  } else {
+    stop("API request failed with status code: ", status_code(response))
+  }
+}
+
+# 예시 호출
+result <- get_coordinates("법원로3길 15") # 영포빌딩
+print(result)
+```
+
+## 행정구역 정보
+
+> 시도 &rarr; 시군구 &rarr; 읍면동
+
+```{r}
+api_key  <- Sys.getenv("VWORLD_API_KEY")
+
+# 시도 정보 검색
+sido_results <- search_adm_districts(api_key, district_type = "sido")
+print(sido_results)
+
+# Search for all sigungu in Seoul (code starts with "11")
+seoul_sigungu <- search_adm_districts(api_key, district_type = "sigungu", parent_code = "11")
+print(seoul_sigungu)
+
+search_adm_districts(api_key, district_type = "sigungu", parent_code = "51")
+
+# Search for all dongmyun in Jongno-gu, Seoul (code starts with "11110")
+jongno_dongmyun <- search_adm_districts(api_key, district_type = "dongmyun", parent_code = "11110")
+print(jongno_dongmyun)
+
+search_adm_districts(api_key, district_type = "dongmyun", parent_code = "51110")
+```
+
+
+## 지도
+
+```{r}
+library(httr)
+library(jsonlite)
+library(leaflet)
+library(dplyr)
+library(sf)
+
+# Function to get polygon data for a specific administrative district
+get_district_polygon <- function(api_key, district_type, code) {
+  base_url <- "https://api.vworld.kr/req/data"
+  params <- list(
+    key = api_key,
+    domain = "https://r2bit.com/BitStat2",
+    service = "data",
+    version = "2.0",
+    request = "getfeature",
+    format = "json",
+    size = 1000,
+    page = 1,
+    geometry = "true",
+    attribute = "true",
+    crs = "EPSG:4326",  # Changed to WGS84 for leaflet compatibility
+    data = switch(district_type,
+                  "sido" = "LT_C_ADSIDO_INFO",
+                  "sigungu" = "LT_C_ADSIGG_INFO",
+                  "dongmyun" = "LT_C_ADEMD_INFO",
+                  "ri" = "LT_C_ADRI_INFO"),
+    attrfilter = switch(district_type,
+                        "sido" = paste0("ctprvn_cd:=:", code),
+                        "sigungu" = paste0("sig_cd:=:", code),
+                        "dongmyun" = paste0("emd_cd:=:", code),
+                        "ri" = paste0("li_cd:=:", code))
+  )
+  
+  res <- GET(base_url, query = params)
+  
+  if (status_code(res) != 200) {
+    stop(paste("API Error:", content(res)$error$text))
+  }
+  
+  data <- content(res, "parsed")
+  return(data$response$result$featureCollection$features[[1]]$geometry)
+}
+
+# Function to create a leaflet map with administrative districts
+create_admin_district_map <- function(api_key, district_type, parent_code = NULL) {
+  # Get district data
+  districts <- search_adm_districts(api_key, district_type, parent_code)
+  
+  if (nrow(districts) == 0) {
+    stop("No districts found for the given parameters.")
+  }
+  
+  # Create an empty list to store polygon data
+  polygons <- list()
+  
+  # Get polygon data for each district
+  for (i in 1:nrow(districts)) {
+    polygon_data <- get_district_polygon(api_key, district_type, districts$code[i])
+    polygons[[i]] <- st_polygon(list(matrix(unlist(polygon_data$coordinates[[1]]), ncol=2, byrow=TRUE)))
+  }
+  
+  # Create sf object
+  districts_sf <- st_sf(
+    code = districts$code,
+    name = districts$name,
+    geometry = st_sfc(polygons, crs = 4326)
+  )
+  
+  # Create leaflet map
+  map <- leaflet(districts_sf) %>%
+    addTiles() %>%
+    addPolygons(
+      fillColor = ~colorQuantile("YlOrRd", as.numeric(code))(as.numeric(code)),
+      weight = 2,
+      opacity = 1,
+      color = "white",
+      dashArray = "3",
+      fillOpacity = 0.7,
+      highlightOptions = highlightOptions(
+        weight = 5,
+        color = "#666",
+        dashArray = "",
+        fillOpacity = 0.7,
+        bringToFront = TRUE),
+      label = ~name,
+      labelOptions = labelOptions(
+        style = list("font-weight" = "normal", padding = "3px 8px"),
+        textsize = "15px",
+        direction = "auto")
+    )
+  
+  return(map)
+}
+
+# Usage example
+api_key <- Sys.getenv("VWORLD_API_KEY")
+
+# Create a map of sido (provinces)
+sido_map <- create_admin_district_map(api_key, "sido")
+print(sido_map)
+
+# Create a map of sigungu (cities/counties) in Seoul (code: "11")
+sigungu_map <- create_admin_district_map(api_key, "sigungu", "51")
+print(sigungu_map)
+
+seoul_sigungu_map <- create_admin_district_map(api_key, "dongmyun", "51110")
+print(seoul_sigungu_map)
+
+get_district_polygon(api_key, "sigungu", "11")
+get_district_polygon(api_key, "dongmyun", "51110")
+
+```
+
+
+

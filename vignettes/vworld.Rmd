@@ -1,0 +1,504 @@
+---
+title: "브이월드(V-World)"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{부동산}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(RealEstateKR)
+library(httr)
+library(jsonlite)
+library(dplyr)
+```
+
+# 기본지도
+
+```{r}
+library(leaflet)
+
+# Vworld API 키 설정
+vworld_api_key <- Sys.getenv("VWORLD_API_KEY")
+
+# Vworld 기본 지도 URL 템플릿
+vworld_base_url <- "http://api.vworld.kr/req/wmts/1.0.0/{key}/Base/{z}/{y}/{x}.png"
+
+# leaflet 지도 생성 함수
+create_vworld_map <- function(api_key, center = c(128.5, 35.95), zoom = 5) {
+  leaflet() %>%
+    setView(lng = center[1], lat = center[2], zoom = zoom) %>%
+    addTiles(
+      urlTemplate = sub("{key}", api_key, vworld_base_url, fixed = TRUE),
+      attribution = "Vworld",
+      options = tileOptions(
+        minZoom = 6,
+        maxZoom = 18,
+        continuousWorld = TRUE,
+        noWrap = TRUE
+      )
+    )
+}
+
+# 지도 생성
+vworld_map <- create_vworld_map(vworld_api_key)
+
+# 지도 출력
+vworld_map
+```
+
+# 지오코딩
+
+## 주소 -> 위경도 (스크립트)
+
+
+```{r}
+library(httr)
+library(jsonlite)
+
+apiurl <- "https://api.vworld.kr/req/address?"
+params <- list(
+  service = "address",
+  request = "getcoord",
+  crs = "epsg:4326",
+  address = "판교로 242",
+  format = "json",
+  type = "road",
+  key = Sys.getenv("VWORLD_API_KEY")
+)
+
+response <- GET(apiurl, query = params)
+
+if (status_code(response) == 200) {
+  response_content <- content(response, as = "text")
+  response_json <- fromJSON(response_content)
+  
+  # 주소 정보와 위경도 정보 추출
+  refined_address <- response_json$response$refined$text
+  longitude <- response_json$response$result$point$x
+  latitude <- response_json$response$result$point$y
+  
+  # 데이터프레임으로 변환
+  address_df <- data.frame(
+    Address = refined_address,
+    Longitude = longitude,
+    Latitude = latitude
+  )
+  
+  # 데이터프레임 출력
+  print(address_df)
+}
+```
+
+## 위경도 -> 주소 (함수)
+
+```{r}
+library(httr)
+library(jsonlite)
+
+# 함수 정의
+get_coordinates <- function(address) {
+  apiurl <- "https://api.vworld.kr/req/address?"
+  params <- list(
+    service = "address",
+    request = "getcoord",
+    crs = "epsg:4326",
+    address = address,
+    format = "json",
+    type = "road",
+    key = Sys.getenv("VWORLD_API_KEY")
+  )
+  
+  response <- GET(apiurl, query = params)
+  
+  if (status_code(response) == 200) {
+    response_content <- content(response, as = "text")
+    response_json <- fromJSON(response_content)
+    
+    # 주소 정보와 위경도 정보 추출
+    refined_address <- response_json$response$refined$text
+    longitude <- response_json$response$result$point$x
+    latitude <- response_json$response$result$point$y
+    
+    # 데이터프레임으로 변환
+    address_df <- data.frame(
+      Address = refined_address,
+      Longitude = longitude,
+      Latitude = latitude
+    )
+    
+    return(address_df)
+  } else {
+    stop("API request failed with status code: ", status_code(response))
+  }
+}
+
+# 예시 호출
+result <- get_coordinates("법원로3길 15") # 영포빌딩
+print(result)
+```
+
+
+
+# 마커
+
+```{r}
+library(leaflet)
+library(sf)
+
+# Vworld API 키 설정
+vworld_api_key <- Sys.getenv("VWORLD_API_KEY")
+
+# Vworld 기본 지도 URL 템플릿
+vworld_base_url <- "http://api.vworld.kr/req/wmts/1.0.0/{key}/Base/{z}/{y}/{x}.png"
+
+# 좌표계 변환 함수 (EPSG:900913 to EPSG:4326)
+convert_coords <- function(x, y) {
+  point <- st_sfc(st_point(c(x, y)), crs = 900913)
+  transformed <- st_transform(point, 4326)
+  return(st_coordinates(transformed))
+}
+
+# 마커 좌표 변환
+marker_coords <- convert_coords(14164292.00853613, 4495009.258626321)
+
+# 한국 R 사용자회 본부 좌표사
+krug_hq <- get_coordinates("법원로3길 15") |> # 영포빌딩
+  mutate(across(c(Longitude, Latitude), as.numeric)) |> 
+  janitor::clean_names()
+print(krug_hq)
+
+marker_coords <- krug_hq |> 
+  select(-address) |> 
+  unlist()
+
+# leaflet 지도 생성 함수 (마커 포함)
+create_vworld_map_with_marker <- function(api_key, marker_coords, center = marker_coords, zoom = 12) {
+  leaflet() %>%
+    setView(lng = as.numeric(center[1]), lat = as.numeric(center[2]), zoom = zoom) %>%
+    addTiles(
+      urlTemplate = sub("{key}", api_key, vworld_base_url, fixed = TRUE),
+      attribution = "Vworld",
+      options = tileOptions(
+        minZoom = 6,
+        maxZoom = 18,
+        continuousWorld = TRUE,
+        noWrap = TRUE
+      )
+    ) %>%
+    addMarkers(
+      lng = marker_coords[1],
+      lat = marker_coords[2],
+      popup = "영포빌딩<br><strong>한국R사용자회</strong>",
+      label = "한국R사용자회 본사"
+    )
+}
+
+# 지도 생성 (마커 포함)
+vworld_map_with_marker <- create_vworld_map_with_marker(vworld_api_key, marker_coords)
+
+# 지도 출력
+vworld_map_with_marker
+```
+
+# 개별 지도
+
+## 시도
+
+### 다각형 지도
+
+```{r}
+library(httr)
+library(jsonlite)
+library(sf)
+
+# Vworld API 키 설정
+vworld_api_key <- Sys.getenv("VWORLD_API_KEY")
+
+get_sido_polygon <- function(api_key, sido_name) {
+  base_url <- "http://api.vworld.kr/req/data"
+  params <- list(
+    key = api_key,
+    domain = "https://r2bit.com/BitStat2",
+    service = "data",
+    version = "2.0",
+    request = "getfeature",
+    format = "json",
+    size = 1000,
+    page = 1,
+    data = "LT_C_ADSIDO_INFO",
+    geometry = "true",
+    attribute = "true",
+    crs = "EPSG:4326",
+    geomfilter = "BOX(124,33,132,43)",
+    attrfilter = paste0("ctp_kor_nm:like:", sido_name)
+  )
+  response <- GET(base_url, query = params)
+  content <- content(response, "text", encoding = "UTF-8")
+  data <- fromJSON(content, simplifyVector = FALSE)
+  # Convert the featureCollection list to a JSON string
+  feature_collection <- data$response$result$featureCollection
+  feature_collection_json <- toJSON(feature_collection, auto_unbox = TRUE)
+  # Convert to sf object directly from the parsed JSON
+  sf_object <- st_read(feature_collection_json, quiet = TRUE)
+  return(sf_object)
+}
+
+# Usage
+sido_name <- "광주광역시"
+sigo_sf <- get_sido_polygon(vworld_api_key, sido_name)
+
+plot(st_geometry(sigo_sf))
+
+```
+
+### 시각화
+
+
+```{r}
+library(leaflet)
+library(httr)
+library(jsonlite)
+library(sf)
+
+# Vworld 기본 지도 URL 템플릿
+vworld_base_url <- "http://api.vworld.kr/req/wmts/1.0.0/{key}/Base/{z}/{y}/{x}.png"
+
+
+# Leaflet 지도에 시도 폴리곤을 표시하는 함수
+display_sido_on_map <- function(api_key, sido_name) {
+  polygon <- get_sido_polygon(api_key, sido_name)
+  
+  map <- leaflet() %>%
+    addTiles(
+      urlTemplate = sub("{key}", api_key, vworld_base_url, fixed = TRUE),
+      attribution = "Vworld"
+    ) %>%
+    addPolygons(
+      data = polygon,
+      fillColor = "red",
+      fillOpacity = 0.5,
+      color = "black",
+      weight = 2,
+      label = ~ctp_kor_nm
+    ) |> 
+    fitBounds(
+      lng1 = st_bbox(polygon)$xmin,
+      lat1 = st_bbox(polygon)$ymin,
+      lng2 = st_bbox(polygon)$xmax,
+      lat2 = st_bbox(polygon)$ymax
+    )
+  
+  return(map)
+}
+
+# 사용 예시
+sido_name <- "대구광역시"  # 원하는 시도 이름을 입력하세요
+display_sido_on_map(vworld_api_key, sido_name)
+
+```
+
+
+## 시군구
+
+### 다각형 지도
+
+```{r}
+library(httr)
+library(jsonlite)
+library(sf)
+
+# Vworld API 키 설정
+vworld_api_key <- Sys.getenv("VWORLD_API_KEY")
+
+get_sgg_polygon <- function(api_key, sgg_name) {
+  base_url <- "http://api.vworld.kr/req/data"
+  params <- list(
+    key = api_key,
+    domain = "https://r2bit.com/BitStat2",
+    service = "data",
+    version = "2.0",
+    request = "getfeature",
+    format = "json",
+    size = 1000,
+    page = 1,
+    data = "LT_C_ADSIGG_INFO",
+    geometry = "true",
+    attribute = "true",
+    crs = "EPSG:4326",
+    geomfilter = "BOX(124,33,132,43)",
+    attrfilter = paste0("sig_kor_nm:like:", URLencode(sgg_name))
+  )
+  
+  response <- GET(base_url, query = params)
+  content <- content(response, "text", encoding = "UTF-8")
+  data <- fromJSON(content, simplifyVector = FALSE)
+  
+  # Convert the featureCollection list to a JSON string
+  feature_collection <- data$response$result$featureCollection
+  feature_collection_json <- toJSON(feature_collection, auto_unbox = TRUE)
+  
+  # Convert to sf object directly from the parsed JSON
+  sf_object <- st_read(feature_collection_json, quiet = TRUE)
+  
+  return(sf_object)
+}
+
+# Usage example
+sgg_name <- "양양군"
+sgg_polygon <- get_sgg_polygon(api_key, sgg_name)
+
+# Print the result
+print(sgg_polygon)
+
+# Plot the polygon
+plot(st_geometry(sgg_polygon), main = paste("Polygon of", sgg_name))
+
+```
+
+### 시각화
+
+
+```{r}
+library(leaflet)
+library(httr)
+library(jsonlite)
+library(sf)
+
+# Vworld 기본 지도 URL 템플릿
+vworld_base_url <- "http://api.vworld.kr/req/wmts/1.0.0/{key}/Base/{z}/{y}/{x}.png"
+
+
+# Leaflet 지도에 시군구 폴리곤을 표시하는 함수
+display_sgg_on_map <- function(api_key, sgg_name) {
+  polygon <- get_sgg_polygon(api_key, sgg_name)
+  
+  map <- leaflet() %>%
+    addTiles(
+      urlTemplate = sub("{key}", api_key, vworld_base_url, fixed = TRUE),
+      attribution = "Vworld"
+    ) %>%
+    addPolygons(
+      data = polygon,
+      fillColor = "blue",
+      fillOpacity = 0.5,
+      color = "black",
+      weight = 2,
+      label = ~sig_kor_nm
+    )
+  
+  return(map)
+}
+
+# 사용 예시
+sgg_name <- "양양군"  # 원하는 시군구 이름을 입력하세요
+display_sgg_on_map(vworld_api_key, sgg_name)
+
+```
+
+
+# 전국 지도
+
+## 시도 - 전국
+
+```{r}
+sido_cd <- search_adm_districts(api_key, district_type = "sido")
+
+get_sido_map <- function(api_key, sido_code) {
+  base_url <- "http://api.vworld.kr/req/data"
+  params <- list(
+    key = api_key,
+    domain = "https://r2bit.com/BitStat2",
+    service = "data",
+    version = "2.0",
+    request = "getfeature",
+    format = "json",
+    size = 1000,
+    page = 1,
+    data = "LT_C_ADSIDO_INFO",
+    geometry = "true",
+    attribute = "true",
+    crs = "EPSG:4326",
+    geomfilter = "BOX(124,33,132,43)",
+    attrfilter = paste0("ctprvn_cd:=:", sido_code)
+  )
+  response <- GET(base_url, query = params)
+  content <- content(response, "text", encoding = "UTF-8")
+  data <- fromJSON(content, simplifyVector = FALSE)
+  # Convert the featureCollection list to a JSON string
+  feature_collection <- data$response$result$featureCollection
+  feature_collection_json <- toJSON(feature_collection, auto_unbox = TRUE)
+  # Convert to sf object directly from the parsed JSON
+  sf_object <- st_read(feature_collection_json, quiet = TRUE)
+  return(sf_object |> st_geometry())
+}
+
+# get_sido_map(vworld_api_key, "11") |> plot()
+
+sido_raw <- sido_cd |> 
+  mutate(data = map(code, get_sido_map, api_key = vworld_api_key)) 
+
+sido_raw |> 
+  unnest(data) |> 
+  ggplot() +
+    geom_sf(aes(geometry = data))
+
+sido_sf <- sido_raw |> 
+  unnest(data) |>
+  rename(geometry = data)
+
+sido_sf |> 
+  st_write("inst/extdata/sido_sf.geojson")
+
+```
+
+# 참고 스크립트
+
+```{r}
+#| eval: false
+
+library(leaflet)
+library(sf)
+
+district_type <- "sido"
+api_key  <- Sys.getenv("VWORLD_API_KEY")
+
+base_url <- "https://api.vworld.kr/req/data"
+params <- list(
+ key = api_key,
+ domain = "https://r2bit.com/BitStat2",
+ service = "data",
+ version = "2.0",
+ request = "getfeature",
+ format = "json",
+ size = 1000,
+ page = 1,
+ geometry = "true",
+ attribute = "true",
+ crs = "EPSG:4326",  # WGS84 coordinate system
+ data = "LT_C_ADSIDO_INFO",
+ geomFilter = "BOX(124,33,132,43)"  # Bounding box for South Korea
+)
+
+res <- GET(base_url, query = params)
+
+content_json <- content(res, "text", encoding = "UTF-8") |> 
+  fromJSON()
+
+sido_df <- content_json$response$result$featureCollection$features |> 
+  as_tibble()
+
+sido_df
+```
+
+
